@@ -1,0 +1,309 @@
+/*
+ * Lazy RSA context materialization for PSA-backed PK contexts (mbedTLS v4).
+ *
+ * mbedTLS v4 stores RSA private keys in PSA slots; legacy code expects a
+ * transparent mbedtls_rsa_context from mbedtls_pk_rsa(). We materialize one
+ * on demand and cache it by pk_context pointer until mbedtls_pk_free().
+ */
+
+#define MBEDTLS_V3_SHIM_INTERNAL
+
+#include <string.h>
+
+#include "mbedtls/build_info.h"
+#include "mbedtls/error.h"
+#include "mbedtls/platform.h"
+#include "psa/crypto.h"
+
+#ifndef MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
+#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
+#endif
+
+#include "mbedtls/pk.h"
+#include "mbedtls/private/pk_private.h"
+#include "mbedtls/private/rsa.h"
+
+#include "mbedtls_v3_shim/pk_rsa.h"
+
+typedef struct mbedtls_v3_shim_pk_rsa_entry {
+    mbedtls_pk_context *pk;
+    mbedtls_rsa_context *rsa;
+    struct mbedtls_v3_shim_pk_rsa_entry *next;
+} mbedtls_v3_shim_pk_rsa_entry;
+
+static mbedtls_v3_shim_pk_rsa_entry *s_pk_rsa_cache;
+
+/* Declared in rsa.c but not exposed in rsa.h on all TF-PSA-Crypto versions. */
+int mbedtls_rsa_parse_key(mbedtls_rsa_context *rsa,
+                          const unsigned char *key,
+                          size_t keylen);
+
+static mbedtls_v3_shim_pk_rsa_entry *cache_find(mbedtls_pk_context *pk)
+{
+    mbedtls_v3_shim_pk_rsa_entry *entry;
+
+    for (entry = s_pk_rsa_cache; entry != NULL; entry = entry->next) {
+        if (entry->pk == pk) {
+            return entry;
+        }
+    }
+
+    return NULL;
+}
+
+static void cache_remove(mbedtls_pk_context *pk)
+{
+    mbedtls_v3_shim_pk_rsa_entry **cursor = &s_pk_rsa_cache;
+
+    while (*cursor != NULL) {
+        if ((*cursor)->pk == pk) {
+            mbedtls_v3_shim_pk_rsa_entry *dead = *cursor;
+
+            *cursor = dead->next;
+            if (dead->rsa != NULL) {
+                mbedtls_rsa_free(dead->rsa);
+                mbedtls_free(dead->rsa);
+            }
+            mbedtls_free(dead);
+            return;
+        }
+        cursor = &(*cursor)->next;
+    }
+}
+
+static int cache_insert(mbedtls_pk_context *pk, mbedtls_rsa_context *rsa)
+{
+    mbedtls_v3_shim_pk_rsa_entry *entry =
+        mbedtls_calloc(1, sizeof(*entry));
+
+    if (entry == NULL) {
+        return MBEDTLS_ERR_PK_ALLOC_FAILED;
+    }
+
+    entry->pk = pk;
+    entry->rsa = rsa;
+    entry->next = s_pk_rsa_cache;
+    s_pk_rsa_cache = entry;
+
+    return 0;
+}
+
+static int pk_is_rsa(const mbedtls_pk_context *pk)
+{
+    return mbedtls_pk_get_type(pk) == MBEDTLS_PK_RSA;
+}
+
+static int pk_is_empty_rsa_template(const mbedtls_pk_context *pk)
+{
+    if (!pk_is_rsa(pk)) {
+        return 0;
+    }
+
+    if (!mbedtls_svc_key_id_is_null(pk->MBEDTLS_PRIVATE(priv_id))) {
+        return 0;
+    }
+
+    if (pk->MBEDTLS_PRIVATE(pub_raw_len) > 0) {
+        return 0;
+    }
+
+    return pk->MBEDTLS_PRIVATE(pk_info) != NULL;
+}
+
+static int pk_has_private_psa_key(const mbedtls_pk_context *pk)
+{
+    return pk_is_rsa(pk) &&
+           !mbedtls_svc_key_id_is_null(pk->MBEDTLS_PRIVATE(priv_id));
+}
+
+static mbedtls_rsa_context *alloc_empty_rsa(void)
+{
+    mbedtls_rsa_context *rsa =
+        mbedtls_calloc(1, sizeof(*rsa));
+
+    if (rsa == NULL) {
+        return NULL;
+    }
+
+    mbedtls_rsa_init(rsa);
+    return rsa;
+}
+
+#if defined(MBEDTLS_PK_WRITE_C)
+static mbedtls_rsa_context *materialize_rsa_from_pk_der(
+    const mbedtls_pk_context *pk)
+{
+    unsigned char der_buf[6144];
+    int written;
+    mbedtls_rsa_context *rsa;
+    unsigned char *der_start;
+    size_t der_len;
+    int rc;
+
+    written = mbedtls_pk_write_key_der(pk, der_buf, sizeof(der_buf));
+    if (written < 0) {
+        return NULL;
+    }
+
+    der_start = der_buf + sizeof(der_buf) - (size_t) written;
+    der_len = (size_t) written;
+
+    rsa = alloc_empty_rsa();
+    if (rsa == NULL) {
+        return NULL;
+    }
+
+    rc = mbedtls_rsa_parse_key(rsa, der_start, der_len);
+    if (rc != 0) {
+        mbedtls_rsa_free(rsa);
+        mbedtls_free(rsa);
+        return NULL;
+    }
+
+    return rsa;
+}
+#endif /* MBEDTLS_PK_WRITE_C */
+
+#if defined(MBEDTLS_PSA_CRYPTO_C)
+static mbedtls_rsa_context *materialize_rsa_from_psa(
+    const mbedtls_pk_context *pk)
+{
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_status_t status;
+    size_t export_size;
+    size_t export_len;
+    unsigned char *export_buf = NULL;
+    mbedtls_rsa_context *rsa = NULL;
+    int rc;
+
+    status = psa_get_key_attributes(pk->MBEDTLS_PRIVATE(priv_id), &attributes);
+    if (status != PSA_SUCCESS) {
+        return NULL;
+    }
+
+    export_size = PSA_EXPORT_KEY_OUTPUT_SIZE(
+        psa_get_key_type(&attributes),
+        psa_get_key_bits(&attributes));
+    psa_reset_key_attributes(&attributes);
+
+    if (export_size == 0) {
+        return NULL;
+    }
+
+    export_buf = mbedtls_calloc(1, export_size);
+    if (export_buf == NULL) {
+        return NULL;
+    }
+
+    status = psa_export_key(pk->MBEDTLS_PRIVATE(priv_id),
+                            export_buf,
+                            export_size,
+                            &export_len);
+    if (status != PSA_SUCCESS) {
+        goto cleanup;
+    }
+
+    rsa = alloc_empty_rsa();
+    if (rsa == NULL) {
+        goto cleanup;
+    }
+
+    rc = mbedtls_rsa_parse_key(rsa, export_buf, export_len);
+    if (rc != 0) {
+        mbedtls_rsa_free(rsa);
+        mbedtls_free(rsa);
+        rsa = NULL;
+    }
+
+cleanup:
+    mbedtls_free(export_buf);
+    return rsa;
+}
+#endif /* MBEDTLS_PSA_CRYPTO_C */
+
+static mbedtls_rsa_context *materialize_rsa(mbedtls_pk_context *pk)
+{
+    mbedtls_rsa_context *rsa = NULL;
+
+    if (pk_is_empty_rsa_template(pk)) {
+        return alloc_empty_rsa();
+    }
+
+#if defined(MBEDTLS_PK_WRITE_C)
+    if (pk_has_private_psa_key(pk) || pk->MBEDTLS_PRIVATE(pub_raw_len) > 0) {
+        rsa = materialize_rsa_from_pk_der(pk);
+        if (rsa != NULL) {
+            return rsa;
+        }
+    }
+#endif /* MBEDTLS_PK_WRITE_C */
+
+#if defined(MBEDTLS_PSA_CRYPTO_C)
+    if (pk_has_private_psa_key(pk)) {
+        rsa = materialize_rsa_from_psa(pk);
+    }
+#endif /* MBEDTLS_PSA_CRYPTO_C */
+
+    return rsa;
+}
+
+mbedtls_rsa_context *mbedtls_v3_shim_pk_rsa(mbedtls_pk_context *pk)
+{
+    mbedtls_v3_shim_pk_rsa_entry *entry;
+    mbedtls_rsa_context *rsa;
+    int rc;
+
+    if (pk == NULL || !pk_is_rsa(pk)) {
+        return NULL;
+    }
+
+    entry = cache_find(pk);
+    if (entry != NULL) {
+        return entry->rsa;
+    }
+
+    rsa = materialize_rsa(pk);
+    if (rsa == NULL) {
+        return NULL;
+    }
+
+    rc = cache_insert(pk, rsa);
+    if (rc != 0) {
+        mbedtls_rsa_free(rsa);
+        mbedtls_free(rsa);
+        return NULL;
+    }
+
+    return rsa;
+}
+
+void mbedtls_v3_shim_pk_rsa_cache_release(mbedtls_pk_context *pk)
+{
+    if (pk != NULL) {
+        cache_remove(pk);
+    }
+}
+
+void mbedtls_v3_shim_pk_free(mbedtls_pk_context *ctx)
+{
+    if (ctx != NULL) {
+        mbedtls_v3_shim_pk_rsa_cache_release(ctx);
+    }
+
+    mbedtls_pk_free(ctx);
+}
+
+int mbedtls_v3_shim_pk_setup(mbedtls_pk_context *ctx,
+                             const mbedtls_pk_info_t *info)
+{
+    int ret = mbedtls_pk_setup(ctx, info);
+
+    if (ret == 0 && mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
+        if (mbedtls_v3_shim_pk_rsa(ctx) == NULL) {
+            mbedtls_pk_free(ctx);
+            return MBEDTLS_ERR_PK_ALLOC_FAILED;
+        }
+    }
+
+    return ret;
+}

@@ -96,3 +96,27 @@ static inline int mbedtls_pk_sign_v4_real(
 #ifndef MBEDTLS_PK_ECKEY_DH
 #define MBEDTLS_PK_ECKEY_DH MBEDTLS_PK_ECKEY  /* DH is now part of ECKEY */
 #endif
+
+#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
+#include "mbedtls_v3_shim/pk_rsa.h"
+
+/*
+ * Legacy mbedtls_pk_rsa() took the PK context by value and returned pk_ctx.
+ * On mbedTLS v4 the RSA material lives in PSA; mbedtls_v3_shim_pk_rsa()
+ * materializes a transparent RSA context on demand.
+ */
+#ifdef mbedtls_pk_rsa
+#undef mbedtls_pk_rsa
+#endif
+#define mbedtls_pk_rsa(ctx) mbedtls_v3_shim_pk_rsa(&(ctx))
+
+#ifdef mbedtls_pk_setup
+#undef mbedtls_pk_setup
+#endif
+#define mbedtls_pk_setup(ctx, info) mbedtls_v3_shim_pk_setup((ctx), (info))
+
+#ifdef mbedtls_pk_free
+#undef mbedtls_pk_free
+#endif
+#define mbedtls_pk_free(ctx) mbedtls_v3_shim_pk_free(ctx)
+#endif /* !MBEDTLS_V3_SHIM_INTERNAL */
