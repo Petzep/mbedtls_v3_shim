@@ -85,9 +85,11 @@ static inline int mbedtls_pk_sign_v4_real(
 #define mbedtls_pk_sign(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len, f_rng, p_rng) \
     mbedtls_pk_sign_v4_real(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len)
 
+#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
 /*
- * Legacy mbedtls_pk_type_t values removed in v4.
- * Map to appropriate replacements or NONE.
+ * Legacy type aliases for code compiled against mbedTLS v3 headers.
+ * Do not apply inside the shim itself: v4 still has distinct enum values
+ * at runtime (e.g. ECKEY vs ECKEY_DH) and switch/case needs the real names.
  */
 #ifndef MBEDTLS_PK_RSA_ALT
 #define MBEDTLS_PK_RSA_ALT MBEDTLS_PK_NONE  /* RSA_ALT was removed in v4 */
@@ -96,8 +98,10 @@ static inline int mbedtls_pk_sign_v4_real(
 #ifndef MBEDTLS_PK_ECKEY_DH
 #define MBEDTLS_PK_ECKEY_DH MBEDTLS_PK_ECKEY  /* DH is now part of ECKEY */
 #endif
+#endif /* !MBEDTLS_V3_SHIM_INTERNAL */
 
 #if !defined(MBEDTLS_V3_SHIM_INTERNAL)
+#include "mbedtls_v3_shim/pk_ec.h"
 #include "mbedtls_v3_shim/pk_rsa.h"
 
 /*
@@ -109,6 +113,11 @@ static inline int mbedtls_pk_sign_v4_real(
 #undef mbedtls_pk_rsa
 #endif
 #define mbedtls_pk_rsa(ctx) mbedtls_v3_shim_pk_rsa(&(ctx))
+
+#ifdef mbedtls_pk_ec
+#undef mbedtls_pk_ec
+#endif
+#define mbedtls_pk_ec(ctx) mbedtls_v3_shim_pk_ec(&(ctx))
 
 #ifdef mbedtls_pk_setup
 #undef mbedtls_pk_setup

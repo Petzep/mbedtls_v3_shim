@@ -23,6 +23,7 @@
 #include "mbedtls/private/pk_private.h"
 #include "mbedtls/private/rsa.h"
 
+#include "mbedtls_v3_shim/pk_ec.h"
 #include "mbedtls_v3_shim/pk_rsa.h"
 
 typedef struct mbedtls_v3_shim_pk_rsa_entry {
@@ -288,6 +289,7 @@ void mbedtls_v3_shim_pk_free(mbedtls_pk_context *ctx)
 {
     if (ctx != NULL) {
         mbedtls_v3_shim_pk_rsa_cache_release(ctx);
+        mbedtls_v3_shim_pk_ec_cache_release(ctx);
     }
 
     mbedtls_pk_free(ctx);
