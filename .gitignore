@@ -1,6 +1,9 @@
 # Prerequisites
 *.d
 
+# Component manager
+dist
+
 # Object files
 *.o
 *.ko

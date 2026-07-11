@@ -1,6 +1,6 @@
 # mbedtls_v3_shim
 
-A header-only ESP-IDF component that allows legacy code written for mbedTLS v3 to compile against mbedTLS v4 (PSA-based API).
+An ESP-IDF component that allows legacy code written for mbedTLS v3 to compile and run against mbedTLS v4 (PSA-based API).
 
 ## Background
 
@@ -75,7 +75,7 @@ static inline int mbedtls_entropy_func(void *data, unsigned char *output, size_t
 
 | Header | Purpose |
 |--------|---------|
-| `pk.h` | Exposes `mbedtls_pk_type_t`, `MBEDTLS_PK_RSA`, `MBEDTLS_PK_ECDSA`, etc. Wraps `mbedtls_pk_parse_key()` (7→5 args) and `mbedtls_pk_sign()` (9→7 args). Defines `MBEDTLS_PK_RSA_ALT` and `MBEDTLS_PK_ECKEY_DH`. |
+| `pk.h` | Exposes `mbedtls_pk_type_t`, `MBEDTLS_PK_RSA`, `MBEDTLS_PK_ECDSA`, etc. Wraps `mbedtls_pk_parse_key()` (7→5 args) and `mbedtls_pk_sign()` (9→7 args). Defines `MBEDTLS_PK_RSA_ALT` and `MBEDTLS_PK_ECKEY_DH`. Redirects `mbedtls_pk_rsa()` and `mbedtls_pk_free()` to lazy RSA materialization helpers (see below). |
 | `rsa.h` | Exposes `mbedtls_rsa_context` and RSA functions (`mbedtls_rsa_init`, `mbedtls_rsa_gen_key`, `mbedtls_rsa_export`, etc.) |
 | `ecdsa.h` | Exposes `mbedtls_ecdsa_context` and ECDSA functions (`mbedtls_ecdsa_init`, `mbedtls_ecdsa_sign`, `mbedtls_ecdsa_verify`, `mbedtls_ecdsa_genkey`, etc.) |
 | `ecdh.h` | Exposes `mbedtls_ecdh_context` and ECDH functions |
@@ -122,10 +122,17 @@ idf_component_register(
 )
 ```
 
+### 5. Lazy RSA materialization (`src/pk_rsa.c`)
+
+On mbedTLS v4, RSA private keys parsed via `mbedtls_pk_parse_key()` are stored in PSA and no longer expose a transparent `mbedtls_rsa_context` through `pk_ctx`. Legacy code such as libssh's `pki_key_dup()` still calls `mbedtls_pk_rsa()` followed by `mbedtls_rsa_export()`.
+
+The shim intercepts `mbedtls_pk_rsa()` and, on first use, exports the key (DER via `mbedtls_pk_write_key_der()` or `psa_export_key()`), parses it into a heap-allocated `mbedtls_rsa_context`, and caches it by `pk_context` pointer until `mbedtls_pk_free()`.
+
 ## Limitations
 
 1. **3DES operations will fail at runtime** - The cipher types are defined but map to `MBEDTLS_CIPHER_NONE`
-2. **No linker wrapping** - This is a header-only solution; if you need to intercept already-compiled code, linker wrapping would be required
+2. **RSA cache memory** - Materialized RSA contexts duplicate key material alongside PSA until `mbedtls_pk_free()`
+3. **`mbedtls_pk_ec()` is not materialized** - ECDSA paths that rely on `mbedtls_pk_ec()` may still need a similar bridge
 
 ## References
 
