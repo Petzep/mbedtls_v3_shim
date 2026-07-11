@@ -19,6 +19,7 @@
 #include "mbedtls/private/bignum.h"
 #include "mbedtls/private/error_common.h"
 #include "mbedtls/rsa.h"
+#include "mbedtls_v3_shim/pk_rsa.h"
 
 #include <stdint.h>
 
@@ -314,7 +315,11 @@ int mbedtls_rsa_complete(mbedtls_rsa_context *ctx)
     }
 #endif
 
-    return rsa_check_context(ctx, is_priv, 1);
+    ret = rsa_check_context(ctx, is_priv, 1);
+    if (ret == 0) {
+        mbedtls_v3_shim_pk_rsa_sync_bits_from_ctx(ctx);
+    }
+    return ret;
 }
 
 int mbedtls_rsa_export_raw(const mbedtls_rsa_context *ctx,

@@ -86,6 +86,66 @@ static inline int mbedtls_pk_sign_v4_real(
     mbedtls_pk_sign_v4_real(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len)
 
 #if !defined(MBEDTLS_V3_SHIM_INTERNAL)
+#include "mbedtls_v3_shim/pk_rsa.h"
+
+static inline size_t mbedtls_pk_get_bitlen_v4_compat(const mbedtls_pk_context *ctx)
+{
+    size_t bits;
+
+    if (ctx == NULL || ctx->pk_info == NULL) {
+        return 0;
+    }
+
+    bits = ctx->bits;
+    if (bits != 0) {
+        return bits;
+    }
+
+    if (mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
+        mbedtls_rsa_context *rsa =
+            mbedtls_v3_shim_pk_rsa((mbedtls_pk_context *) ctx);
+
+        if (rsa != NULL &&
+            mbedtls_mpi_cmp_int(&rsa->N, 0) != 0) {
+            bits = mbedtls_mpi_bitlen(&rsa->N);
+            if (bits > 0) {
+                ((mbedtls_pk_context *) ctx)->bits = bits;
+                return bits;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static inline int mbedtls_pk_verify_v4_real(mbedtls_pk_context *ctx,
+                                            mbedtls_md_type_t md_alg,
+                                            const unsigned char *hash,
+                                            size_t hash_len,
+                                            const unsigned char *sig,
+                                            size_t sig_len)
+{
+    return mbedtls_pk_verify(ctx, md_alg, hash, hash_len, sig, sig_len);
+}
+
+static inline int mbedtls_pk_verify_v4_compat(mbedtls_pk_context *ctx,
+                                              mbedtls_md_type_t md_alg,
+                                              const unsigned char *hash,
+                                              size_t hash_len,
+                                              const unsigned char *sig,
+                                              size_t sig_len)
+{
+    if (ctx != NULL && ctx->pk_info != NULL &&
+        mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA &&
+        ctx->pub_raw_len == 0) {
+        mbedtls_v3_shim_pk_rsa(ctx);
+    }
+
+    return mbedtls_pk_verify_v4_real(ctx, md_alg, hash, hash_len, sig, sig_len);
+}
+#endif /* !MBEDTLS_V3_SHIM_INTERNAL */
+
+#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
 /*
  * Legacy type aliases for code compiled against mbedTLS v3 headers.
  * Do not apply inside the shim itself: v4 still has distinct enum values
@@ -102,7 +162,6 @@ static inline int mbedtls_pk_sign_v4_real(
 
 #if !defined(MBEDTLS_V3_SHIM_INTERNAL)
 #include "mbedtls_v3_shim/pk_ec.h"
-#include "mbedtls_v3_shim/pk_rsa.h"
 
 /*
  * Legacy mbedtls_pk_rsa() took the PK context by value and returned pk_ctx.
@@ -128,4 +187,15 @@ static inline int mbedtls_pk_sign_v4_real(
 #undef mbedtls_pk_free
 #endif
 #define mbedtls_pk_free(ctx) mbedtls_v3_shim_pk_free(ctx)
+
+#ifdef mbedtls_pk_get_bitlen
+#undef mbedtls_pk_get_bitlen
+#endif
+#define mbedtls_pk_get_bitlen(ctx) mbedtls_pk_get_bitlen_v4_compat(ctx)
+
+#ifdef mbedtls_pk_verify
+#undef mbedtls_pk_verify
+#endif
+#define mbedtls_pk_verify(ctx, md_alg, hash, hash_len, sig, sig_len) \
+    mbedtls_pk_verify_v4_compat(ctx, md_alg, hash, hash_len, sig, sig_len)
 #endif /* !MBEDTLS_V3_SHIM_INTERNAL */

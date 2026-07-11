@@ -38,6 +38,9 @@ static mbedtls_v3_shim_pk_rsa_entry *s_pk_rsa_cache;
 int mbedtls_rsa_parse_key(mbedtls_rsa_context *rsa,
                           const unsigned char *key,
                           size_t keylen);
+int mbedtls_rsa_write_pubkey(const mbedtls_rsa_context *rsa,
+                             unsigned char *start,
+                             unsigned char **p);
 
 static mbedtls_v3_shim_pk_rsa_entry *cache_find(mbedtls_pk_context *pk)
 {
@@ -222,6 +225,89 @@ cleanup:
 }
 #endif /* MBEDTLS_PSA_CRYPTO_C */
 
+static void pk_sync_bits_from_rsa(mbedtls_pk_context *pk,
+                                  const mbedtls_rsa_context *rsa)
+{
+    size_t bits;
+
+    if (pk == NULL || rsa == NULL ||
+        pk->MBEDTLS_PRIVATE(bits) != 0) {
+        return;
+    }
+
+    if (mbedtls_mpi_cmp_int(&rsa->MBEDTLS_PRIVATE(N), 0) == 0) {
+        return;
+    }
+
+    bits = mbedtls_mpi_bitlen(&rsa->MBEDTLS_PRIVATE(N));
+    if (bits > 0) {
+        pk->MBEDTLS_PRIVATE(bits) = bits;
+    }
+}
+
+/*
+ * mbedTLS v4 rsa_verify_wrap() imports pk->pub_raw into PSA. Legacy code that
+ * builds RSA keys via mbedtls_rsa_import/complete only populates the lazy RSA
+ * context, leaving pub_raw empty. Export PKCS#1 RSAPublicKey DER so verify works.
+ */
+static void pk_sync_pubkey_raw_from_rsa(mbedtls_pk_context *pk,
+                                        const mbedtls_rsa_context *rsa)
+{
+    unsigned char buf[MBEDTLS_PK_MAX_PUBKEY_RAW_LEN];
+    unsigned char *end;
+    int written;
+    size_t len;
+
+    if (pk == NULL || rsa == NULL || pk->MBEDTLS_PRIVATE(pub_raw_len) > 0) {
+        return;
+    }
+
+    if (mbedtls_mpi_cmp_int(&rsa->MBEDTLS_PRIVATE(N), 0) == 0 ||
+        mbedtls_mpi_cmp_int(&rsa->MBEDTLS_PRIVATE(E), 0) == 0) {
+        return;
+    }
+
+    end = buf + sizeof(buf);
+    written = mbedtls_rsa_write_pubkey(rsa, buf, &end);
+    if (written <= 0) {
+        return;
+    }
+
+    len = (size_t) written;
+    if (len > sizeof(pk->MBEDTLS_PRIVATE(pub_raw))) {
+        return;
+    }
+
+    memcpy(pk->MBEDTLS_PRIVATE(pub_raw), end, len);
+    pk->MBEDTLS_PRIVATE(pub_raw_len) = len;
+#if defined(PSA_WANT_KEY_TYPE_RSA_PUBLIC_KEY)
+    pk->MBEDTLS_PRIVATE(psa_type) = PSA_KEY_TYPE_RSA_PUBLIC_KEY;
+#endif
+}
+
+static void pk_sync_from_rsa(mbedtls_pk_context *pk,
+                             const mbedtls_rsa_context *rsa)
+{
+    pk_sync_bits_from_rsa(pk, rsa);
+    pk_sync_pubkey_raw_from_rsa(pk, rsa);
+}
+
+void mbedtls_v3_shim_pk_rsa_sync_bits_from_ctx(mbedtls_rsa_context *rsa)
+{
+    mbedtls_v3_shim_pk_rsa_entry *entry;
+
+    if (rsa == NULL) {
+        return;
+    }
+
+    for (entry = s_pk_rsa_cache; entry != NULL; entry = entry->next) {
+        if (entry->rsa == rsa) {
+            pk_sync_from_rsa(entry->pk, rsa);
+            return;
+        }
+    }
+}
+
 static mbedtls_rsa_context *materialize_rsa(mbedtls_pk_context *pk)
 {
     mbedtls_rsa_context *rsa = NULL;
@@ -260,6 +346,7 @@ mbedtls_rsa_context *mbedtls_v3_shim_pk_rsa(mbedtls_pk_context *pk)
 
     entry = cache_find(pk);
     if (entry != NULL) {
+        pk_sync_from_rsa(pk, entry->rsa);
         return entry->rsa;
     }
 
@@ -275,6 +362,7 @@ mbedtls_rsa_context *mbedtls_v3_shim_pk_rsa(mbedtls_pk_context *pk)
         return NULL;
     }
 
+    pk_sync_from_rsa(pk, rsa);
     return rsa;
 }
 
