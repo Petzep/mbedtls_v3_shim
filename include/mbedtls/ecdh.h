@@ -23,6 +23,15 @@ int mbedtls_ecdh_compute_shared(mbedtls_ecp_group *grp, mbedtls_mpi *z,
                                 int (*f_rng)(void *, unsigned char *, size_t),
                                 void *p_rng);
 
+/* In v3 this was a thin alias for mbedtls_ecp_gen_keypair(). */
+static inline int mbedtls_ecdh_gen_public(mbedtls_ecp_group *grp, mbedtls_mpi *d,
+                                          mbedtls_ecp_point *Q,
+                                          int (*f_rng)(void *, unsigned char *, size_t),
+                                          void *p_rng)
+{
+    return mbedtls_ecp_gen_keypair(grp, d, Q, f_rng, p_rng);
+}
+
 #ifdef __cplusplus
 }
 #endif
