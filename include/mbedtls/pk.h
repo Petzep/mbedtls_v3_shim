@@ -22,8 +22,18 @@
 #include_next "mbedtls/pk.h"
 
 /* Include the private pk header for legacy types like mbedtls_pk_type_t,
- * MBEDTLS_PK_RSA, mbedtls_pk_can_do, mbedtls_pk_get_type, etc. */
+ * MBEDTLS_PK_RSA, mbedtls_pk_can_do, mbedtls_pk_get_type, etc.
+ * Unlike the other private headers it carries no extern "C" guard of its own,
+ * so C++ call sites would otherwise link against mangled names. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "mbedtls/private/pk_private.h"
+
+#ifdef __cplusplus
+}
+#endif
 
 /* Include RSA and ECDSA private headers as many legacy files only include
  * mbedtls/pk.h but use RSA/ECDSA types and functions directly */
