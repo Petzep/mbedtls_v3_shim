@@ -15,22 +15,44 @@
 #include "mbedtls/private/ecp.h"
 
 #ifdef __cplusplus
-extern "C" {
-#endif
-
-int mbedtls_ecdh_compute_shared(mbedtls_ecp_group *grp, mbedtls_mpi *z,
-                                const mbedtls_ecp_point *Q, const mbedtls_mpi *d,
-                                int (*f_rng)(void *, unsigned char *, size_t),
-                                void *p_rng);
-
-/* In v3 this was a thin alias for mbedtls_ecp_gen_keypair(). */
-static inline int mbedtls_ecdh_gen_public(mbedtls_ecp_group *grp, mbedtls_mpi *d,
-                                          mbedtls_ecp_point *Q,
-                                          int (*f_rng)(void *, unsigned char *, size_t),
-                                          void *p_rng)
+extern "C"
 {
-    return mbedtls_ecp_gen_keypair(grp, d, Q, f_rng, p_rng);
-}
+#endif
+    typedef struct mbedtls_ecdh_context
+    {
+        unsigned char _unused;
+    } mbedtls_ecdh_context;
+
+    static inline void mbedtls_ecdh_init(mbedtls_ecdh_context* ctx)
+    {
+        (void)ctx;
+    }
+
+    static inline void mbedtls_ecdh_free(mbedtls_ecdh_context* ctx)
+    {
+        (void)ctx;
+    }
+
+    static inline int mbedtls_ecdh_setup(mbedtls_ecdh_context* ctx, mbedtls_ecp_group_id grp_id)
+    {
+        (void)ctx;
+        (void)grp_id;
+        return 0;
+    }
+
+    int mbedtls_ecdh_compute_shared(mbedtls_ecp_group* grp, mbedtls_mpi* z,
+        const mbedtls_ecp_point* Q, const mbedtls_mpi* d,
+        int (*f_rng)(void*, unsigned char*, size_t),
+        void* p_rng);
+
+    /* In v3 this was a thin alias for mbedtls_ecp_gen_keypair(). */
+    static inline int mbedtls_ecdh_gen_public(mbedtls_ecp_group* grp, mbedtls_mpi* d,
+        mbedtls_ecp_point* Q,
+        int (*f_rng)(void*, unsigned char*, size_t),
+        void* p_rng)
+    {
+        return mbedtls_ecp_gen_keypair(grp, d, Q, f_rng, p_rng);
+    }
 
 #ifdef __cplusplus
 }
